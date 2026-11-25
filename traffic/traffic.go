@@ -1438,7 +1438,8 @@ func (t *Traffic) Page(f PageQuery, page, size int) (rows []ExchangeMeta, total 
 	return rows, total, rs.Err()
 }
 
-// Get returns the full request/response text of one exchange. Bodies come from
+// Get returns the full request/response text of one exchange, each body with
+// its Content-Encoding undone (see displayBody). Bodies come from
 // the database; rows recorded before bodies moved into SQLite carry a non-empty
 // path and are read from the legacy on-disk tree instead, so history stays
 // readable without being migrated.
@@ -1451,6 +1452,7 @@ func (t *Traffic) Get(id string) (req, resp string, err error) {
 FROM exchange_bodies b JOIN exchanges e ON e.id=b.id WHERE b.id=?`, id).
 		Scan(&reqHead, &reqBody, &reqBlob, &respHead, &respBody, &respBlob, &reqLen, &respLen)
 	if err == nil {
+		reqBody, respBody = t.displayBody(reqHead, reqBody, reqBlob), t.displayBody(respHead, respBody, respBlob)
 		return assembleRaw(reqHead, reqBody, reqBlob, reqLen), assembleRaw(respHead, respBody, respBlob, respLen), nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
