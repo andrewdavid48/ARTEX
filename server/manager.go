@@ -770,11 +770,20 @@ func (m *Manager) SetWebSearch(on bool, backend string, braveKey, tavilyKey, kee
 // in sync with the traffic-capture toggle.
 const browserMCPName = "browser"
 
+// browserMCPIgnoreHTTPSEnv is Playwright MCP's environment form of
+// --ignore-https-errors. Chromium does not read NODE_EXTRA_CA_CERTS or the
+// system store, so without it every page behind the recording proxy fails with
+// ERR_CERT_AUTHORITY_INVALID. An environment entry, not an argument: an
+// --ignore-https-errors the operator added to the arguments is theirs and stays.
+const browserMCPIgnoreHTTPSEnv = "PLAYWRIGHT_MCP_IGNORE_HTTPS_ERRORS"
+
 // syncBrowserMCPProxy reconciles the seeded browser MCP's proxy args + CA env with
 // the current traffic-capture state: capture on → route Playwright through the
-// recording proxy (--proxy-server) and trust its MITM CA (NODE_EXTRA_CA_CERTS);
-// capture off → strip both. Idempotent, and a no-op if the user deleted/renamed the
-// MCP. Must be called WITHOUT m.mu held (ProxyAddr/ProxyCACert take the lock).
+// recording proxy (--proxy-server), trust its MITM CA in Node (NODE_EXTRA_CA_CERTS)
+// and have the browser accept the certificates the proxy signs
+// (browserMCPIgnoreHTTPSEnv); capture off → strip all three. Idempotent, and a
+// no-op if the user deleted/renamed the MCP. Must be called WITHOUT m.mu held
+// (ProxyAddr/ProxyCACert take the lock).
 func (m *Manager) syncBrowserMCPProxy() {
 	servers, err := m.pg.ListMCP()
 	if err != nil {
@@ -798,15 +807,7 @@ func (m *Manager) syncBrowserMCPProxy() {
 	proxy := proxyWithoutCredentials(m.ProxyAddr())
 	cert := m.ProxyCACert() // "" when capture off
 
-	args := stripProxyArgs(decodeStrSlice(srv.Args))
-	env := decodeStrMap(srv.Env)
-	delete(env, "NODE_EXTRA_CA_CERTS")
-	if proxy != "" {
-		args = append(args, "--proxy-server", proxy)
-		if cert != "" {
-			env["NODE_EXTRA_CA_CERTS"] = cert
-		}
-	}
+	args, env := browserMCPProxyConfig(decodeStrSlice(srv.Args), decodeStrMap(srv.Env), proxy, cert)
 	srv.Args = encodeJSON(args)
 	srv.Env = encodeJSON(env)
 	if _, err := m.pg.SaveMCP(srv); err != nil {
@@ -818,6 +819,24 @@ func (m *Manager) syncBrowserMCPProxy() {
 	} else {
 		log.Printf("[mcp] browser MCP capture proxy configuration removed")
 	}
+}
+
+// browserMCPProxyConfig returns the browser MCP's args and env for the given
+// proxy and MITM CA (both "" when there is none): the proxy flags and the two
+// trust variables are dropped, then set again from the current state. Every
+// other argument and variable is kept. env is modified in place.
+func browserMCPProxyConfig(args []string, env map[string]string, proxy, cert string) ([]string, map[string]string) {
+	args = stripProxyArgs(args)
+	delete(env, "NODE_EXTRA_CA_CERTS")
+	delete(env, browserMCPIgnoreHTTPSEnv)
+	if proxy != "" {
+		args = append(args, "--proxy-server", proxy)
+		if cert != "" {
+			env["NODE_EXTRA_CA_CERTS"] = cert
+			env[browserMCPIgnoreHTTPSEnv] = "true"
+		}
+	}
+	return args, env
 }
 
 // proxyWithoutCredentials returns a proxy URL without its user:password, for
