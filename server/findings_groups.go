@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -30,7 +31,7 @@ func findingPaginationParam(raw string, fallback, upperBound int) int {
 func findingFilterFromQuery(q url.Values) db.FindingFilter {
 	return db.FindingFilter{
 		Severity:           normFilter(q.Get("severity")),
-		Status:             normFilter(q.Get("status")),
+		Status:             findingStatusFilter(q.Get("status")),
 		ReportState:        normFilter(q.Get("report_state")),
 		VerificationStatus: normFilter(q.Get("verification_status")),
 		VulnClass:          normFilter(q.Get("vulnclass")),
@@ -42,6 +43,19 @@ func findingFilterFromQuery(q url.Values) db.FindingFilter {
 		// company is the sidebar switcher; it also narrows the asset tree.
 		Company: strings.TrimSpace(q.Get("company")),
 	}
+}
+
+// findingStatusFilter keeps the known statuses from a comma-separated list
+// ("pending,confirmed"), so the page can hide statuses it does not want. Unknown
+// values are dropped; nothing valid left means no status filter.
+func findingStatusFilter(raw string) string {
+	var out []string
+	for _, st := range strings.Split(raw, ",") {
+		if st = strings.TrimSpace(st); db.ValidFindingStatus(st) && !slices.Contains(out, st) {
+			out = append(out, st)
+		}
+	}
+	return strings.Join(out, ",")
 }
 
 // findingAssetTree serves the "by asset" view's left-hand tree: every asset that

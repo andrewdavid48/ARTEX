@@ -326,6 +326,20 @@ func TestFindingsPageAndStats(t *testing.T) {
 		t.Fatalf("pending filter: want 2/2, got %d/%d", total, len(pend))
 	}
 
+	// Several statuses at once: pending + resolved = all 6; resolved + fixed = 4.
+	for _, tc := range []struct {
+		status string
+		want   int
+	}{{FindingPending + "," + FindingResolved, 6}, {FindingResolved + "," + FindingFixed, 4}} {
+		_, total, err = d.ListFindingsPage(FindingFilter{VulnClass: vc, Status: tc.status}, 1, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if total != tc.want {
+			t.Fatalf("status %q: want %d, got %d", tc.status, tc.want, total)
+		}
+	}
+
 	// Combined filter: vulnclass + severity=high → 3 rows.
 	_, total, err = d.ListFindingsPage(FindingFilter{VulnClass: vc, Severity: "high"}, 1, 50)
 	if err != nil {

@@ -591,7 +591,8 @@ export interface FindingQuery {
   page: number;
   pageSize: number;
   severity?: "all" | Severity;
-  status?: "all" | FindingStatus;
+  // "all", one status, or several comma-separated ("pending,confirmed").
+  status?: string;
   reportState?: "all" | FindingReportState;
   verificationStatus?: "all" | VerificationStatus;
   vulnclass?: string;

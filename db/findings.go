@@ -181,7 +181,7 @@ func (d *DB) ListFindings(limit int) ([]*DBFinding, error) {
 // anything else (newest first).
 type FindingFilter struct {
 	Severity           string // high | medium | low
-	Status             string // pending | false_positive | ignored | resolved
+	Status             string // one status, or several comma-separated (pending,confirmed)
 	ReportState        string // none | submitted | accepted | rejected | duplicate
 	VerificationStatus string // verified | unverified | blocked | not_assessed | false_positive
 	VulnClass          string
@@ -232,7 +232,16 @@ func (f FindingFilter) where() (string, []any) {
 		conds = append(conds, fmt.Sprintf("f.%s = $%d", col, len(args)))
 	}
 	add("severity", f.Severity)
-	add("status", f.Status)
+	if statuses := strings.Split(f.Status, ","); len(statuses) > 1 {
+		ph := make([]string, len(statuses))
+		for i, st := range statuses {
+			args = append(args, st)
+			ph[i] = fmt.Sprintf("$%d", len(args))
+		}
+		conds = append(conds, "f.status IN ("+strings.Join(ph, ",")+")")
+	} else {
+		add("status", f.Status)
+	}
 	add("report_state", f.ReportState)
 	add("verification_status", f.VerificationStatus)
 	add("vulnclass", f.VulnClass)

@@ -2754,5 +2754,14 @@
   "Updated": "更新时间",
   "Open in file manager": "在文件管理器中打开",
   "Pull latest": "拉取最新",
-  "Delete clone": "删除克隆"
+  "Delete clone": "删除克隆",
+  "{count} statuses": "{count} 个状态",
+  "Retest selected": "复测所选",
+  "Started {started}, skipped {skipped} already running, {failed} failed": "已启动 {started} 个，跳过 {skipped} 个正在复测的，{failed} 个失败",
+  "Retest {count} findings": "复测 {count} 个漏洞",
+  "Each finding is retested by the Retest Agent in its own session. A retest that confirms the fix sets the finding to \"Fixed\"; other verdicts keep the current status. Findings already being retested are skipped.": "复测 Agent 会在独立会话中逐个复测每个漏洞。确认已修复的复测会将漏洞状态设为“已修复”；其他结论保留当前状态。正在复测的漏洞会被跳过。",
+  "This starts up to {count} agent sessions that run at the same time and each use LLM tokens.": "这将同时启动最多 {count} 个 Agent 会话，每个会话都会消耗 LLM token。",
+  "The same notes are sent with every retest.": "每次复测都会附带相同的备注。",
+  "Starting {done}/{count}…": "正在启动 {done}/{count}…",
+  "Start {count} retests": "开始 {count} 个复测"
 }

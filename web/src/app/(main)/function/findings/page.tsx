@@ -7,18 +7,21 @@ import Link from "next/link";
 import {
   ArrowUpRightIcon,
   BugIcon,
+  ChevronDownIcon,
   ChevronRightIcon,
   CircleCheckIcon,
   ClockIcon,
   DownloadIcon,
   FileUpIcon,
   InfoIcon,
+  RotateCcwIcon,
   SearchIcon,
   ShieldAlertIcon,
   TriangleAlertIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { FindingBulkRetestDialog } from "@/components/finding-bulk-retest-dialog";
 import { FindingRetestDialog } from "@/components/finding-retest-dialog";
 import { StatusBadge } from "@/components/status-badge";
 import { TablePagination } from "@/components/table-pagination";
@@ -32,6 +35,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -47,6 +57,7 @@ import type {
   ActiveFindingRetest,
   Finding,
   FindingAssetNode,
+  FindingRetest,
   FindingGroup,
   FindingReportState,
   FindingStats,
@@ -148,7 +159,13 @@ export default function FindingsPage() {
   const company = useActiveCompany();
   const [view, setView] = React.useState<FindingView>("flat");
   const [severity, setSeverity] = React.useState<"all" | Severity>("all");
-  const [status, setStatus] = React.useState<"all" | FindingStatus>("all");
+  // Ticked statuses; every one ticked (the default) sends no status filter.
+  const [statuses, setStatuses] = React.useState<FindingStatus[]>(FINDING_STATUSES);
+  const allStatuses = statuses.length === FINDING_STATUSES.length;
+  const status = allStatuses ? "all" : FINDING_STATUSES.filter((st) => statuses.includes(st)).join(",");
+  let statusLabel = t("{count} statuses", { count: statuses.length });
+  if (allStatuses) statusLabel = t("All statuses");
+  else if (statuses.length === 1) statusLabel = statusMeta("finding", statuses[0]).label;
   const [reportState, setReportState] = React.useState<"all" | FindingReportState>("all");
   const [verificationStatus, setVerificationStatus] = React.useState<"all" | VerificationStatus>("all");
   const [vulnclass, setVulnclass] = React.useState<string>("all");
@@ -174,6 +191,7 @@ export default function FindingsPage() {
   const [pageSize, setPageSize] = React.useState(10);
   const [deepenFinding, setDeepenFinding] = React.useState<Finding | null>(null);
   const [retestFinding, setRetestFinding] = React.useState<Finding | null>(null);
+  const [bulkRetestOpen, setBulkRetestOpen] = React.useState(false);
   const [activeRetests, setActiveRetests] = React.useState<Record<string, ActiveFindingRetest>>({});
   const activeRetestFingerprint = Object.values(activeRetests)
     .map((item) => item.id)
@@ -230,6 +248,7 @@ export default function FindingsPage() {
           view?: unknown;
           severity?: unknown;
           status?: unknown;
+          statuses?: unknown;
           reportState?: unknown;
           verificationStatus?: unknown;
           vulnclass?: unknown;
@@ -240,8 +259,12 @@ export default function FindingsPage() {
         if (parsed.severity === "all" || SEVERITIES.includes(parsed.severity as Severity)) {
           setSeverity(parsed.severity as "all" | Severity);
         }
-        if (parsed.status === "all" || FINDING_STATUSES.includes(parsed.status as FindingStatus)) {
-          setStatus(parsed.status as "all" | FindingStatus);
+        if (Array.isArray(parsed.statuses)) {
+          const saved = FINDING_STATUSES.filter((st) => (parsed.statuses as unknown[]).includes(st));
+          if (saved.length > 0) setStatuses(saved);
+        } else if (FINDING_STATUSES.includes(parsed.status as FindingStatus)) {
+          // Preferences saved before the multi-select held one status.
+          setStatuses([parsed.status as FindingStatus]);
         }
         if (parsed.reportState === "all" || FINDING_REPORT_STATES.includes(parsed.reportState as FindingReportState)) {
           setReportState(parsed.reportState as "all" | FindingReportState);
@@ -266,9 +289,9 @@ export default function FindingsPage() {
     if (!preferencesHydrated) return;
     setLocalStorageValue(
       FINDING_LIST_PREFERENCE_KEY,
-      JSON.stringify({ view, severity, status, reportState, verificationStatus, vulnclass, task, sort }),
+      JSON.stringify({ view, severity, statuses, reportState, verificationStatus, vulnclass, task, sort }),
     );
-  }, [preferencesHydrated, reportState, severity, sort, status, task, verificationStatus, view, vulnclass]);
+  }, [preferencesHydrated, reportState, severity, sort, statuses, task, verificationStatus, view, vulnclass]);
 
   React.useEffect(() => {
     const timer = window.setTimeout(() => setQuery(search.trim()), 300);
@@ -733,7 +756,7 @@ export default function FindingsPage() {
           .catch(() => {
             // The row update remains valid even if the aggregate refresh fails.
           });
-        if (status !== "all" && next !== status) {
+        if (!statuses.includes(next)) {
           setFindings((cur) => cur.filter((x) => !isSameFinding(x, f)));
           setTotal((t) => Math.max(0, t - 1));
           setFlat((cur) => ({ ...cur, total: Math.max(0, cur.total - 1) }));
@@ -744,7 +767,7 @@ export default function FindingsPage() {
         toast.error(t("Update failed: {error}", { error: (e as Error).message }));
       }
     },
-    [refreshAfterMutation, setFindings, status, company],
+    [refreshAfterMutation, setFindings, statuses, company],
   );
 
   const updateReportState = React.useCallback(
@@ -774,6 +797,19 @@ export default function FindingsPage() {
     },
     [refreshAfterMutation, reportState, setFindings, company],
   );
+
+  // markRetestActive shows a just-started retest on its row before the next poll.
+  const markRetestActive = React.useCallback((findingId: string, retest: FindingRetest) => {
+    if (retest.conversation_id == null || !["pending", "running"].includes(retest.status)) return;
+    retestRefreshVersion.current++;
+    const active: ActiveFindingRetest = {
+      id: retest.id,
+      finding_id: findingId,
+      conversation_id: retest.conversation_id,
+      status: retest.status === "pending" ? "pending" : "running",
+    };
+    setActiveRetests((current) => ({ ...current, [findingId]: active }));
+  }, []);
 
   // applyBulkStatus sets the same triage status on every selected finding, then
   // reloads the current view so rows hidden by the status filter disappear.
@@ -1087,19 +1123,40 @@ export default function FindingsPage() {
             ))}
           </ToggleGroup>
 
-          <Select value={status} onValueChange={(v) => setStatus(v as "all" | FindingStatus)}>
-            <SelectTrigger size="sm" className="w-32">
-              <SelectValue placeholder={t("Status")} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">{t("All statuses")}</SelectItem>
-              {FINDING_STATUSES.map((st) => (
-                <SelectItem key={st} value={st}>
-                  {statusMeta("finding", st).label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="w-36 justify-between font-normal">
+                <span className="truncate">{statusLabel}</span>
+                <ChevronDownIcon className="opacity-50" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-48">
+              <DropdownMenuCheckboxItem
+                checked={allStatuses}
+                disabled={allStatuses}
+                onSelect={(e) => e.preventDefault()}
+                onCheckedChange={() => setStatuses(FINDING_STATUSES)}
+              >
+                {t("All statuses")}
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuSeparator />
+              {FINDING_STATUSES.map((st) => {
+                const on = statuses.includes(st);
+                return (
+                  <DropdownMenuCheckboxItem
+                    key={st}
+                    checked={on}
+                    // The last ticked status stays ticked, so this filter never empties the list.
+                    disabled={on && statuses.length === 1}
+                    onSelect={(e) => e.preventDefault()}
+                    onCheckedChange={(v) => setStatuses((cur) => (v ? [...cur, st] : cur.filter((x) => x !== st)))}
+                  >
+                    {statusMeta("finding", st).label}
+                  </DropdownMenuCheckboxItem>
+                );
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           <Select value={reportState} onValueChange={(v) => setReportState(v as "all" | FindingReportState)}>
             <SelectTrigger size="sm" className="w-40">
@@ -1229,6 +1286,9 @@ export default function FindingsPage() {
                     ))}
                   </SelectContent>
                 </Select>
+                <Button size="sm" variant="outline" disabled={bulkBusy} onClick={() => setBulkRetestOpen(true)}>
+                  <RotateCcwIcon /> {t("Retest selected")}
+                </Button>
               </div>
             )}
             <Button size="sm" variant="outline" onClick={openExport}>
@@ -1419,19 +1479,17 @@ export default function FindingsPage() {
           key={retestFinding.finding_id}
           findingId={retestFinding.finding_id}
           findingName={retestFinding.name || retestFinding.vulnclass || retestFinding.summary}
-          onStarted={(retest) => {
-            const findingId = retestFinding.finding_id;
-            if (!findingId || retest.conversation_id == null || !["pending", "running"].includes(retest.status)) return;
-            retestRefreshVersion.current++;
-            const active: ActiveFindingRetest = {
-              id: retest.id,
-              finding_id: findingId,
-              conversation_id: retest.conversation_id,
-              status: retest.status === "pending" ? "pending" : "running",
-            };
-            setActiveRetests((current) => ({ ...current, [findingId]: active }));
-          }}
+          onStarted={(retest) => retestFinding.finding_id && markRetestActive(retestFinding.finding_id, retest)}
           onClose={() => setRetestFinding(null)}
+        />
+      ) : null}
+
+      {bulkRetestOpen ? (
+        <FindingBulkRetestDialog
+          findingIds={[...selectedIds]}
+          onStarted={markRetestActive}
+          onDone={() => setSelectedIds(new Set())}
+          onClose={() => setBulkRetestOpen(false)}
         />
       ) : null}
 

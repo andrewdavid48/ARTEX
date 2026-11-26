@@ -2754,5 +2754,14 @@
   "Updated": "Güncellendi",
   "Open in file manager": "Dosya yöneticisinde aç",
   "Pull latest": "En sonu çek",
-  "Delete clone": "Klonu sil"
+  "Delete clone": "Klonu sil",
+  "{count} statuses": "{count} durum",
+  "Retest selected": "Seçilenleri yeniden test et",
+  "Started {started}, skipped {skipped} already running, {failed} failed": "{started} başlatıldı, zaten çalışan {skipped} atlandı, {failed} başarısız",
+  "Retest {count} findings": "{count} bulguyu yeniden test et",
+  "Each finding is retested by the Retest Agent in its own session. A retest that confirms the fix sets the finding to \"Fixed\"; other verdicts keep the current status. Findings already being retested are skipped.": "Her bulgu, Yeniden Test Ajanı tarafından kendi oturumunda yeniden test edilir. Düzeltmeyi doğrulayan bir yeniden test bulguyu \"Düzeltildi\" olarak işaretler; diğer sonuçlar mevcut durumu korur. Zaten yeniden test edilen bulgular atlanır.",
+  "This starts up to {count} agent sessions that run at the same time and each use LLM tokens.": "Bu işlem aynı anda çalışan ve her biri LLM token'ı kullanan en fazla {count} ajan oturumu başlatır.",
+  "The same notes are sent with every retest.": "Aynı notlar her yeniden testle gönderilir.",
+  "Starting {done}/{count}…": "Başlatılıyor {done}/{count}…",
+  "Start {count} retests": "{count} yeniden testi başlat"
 }
