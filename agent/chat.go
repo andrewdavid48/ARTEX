@@ -80,7 +80,8 @@ func (c *ChatAgent) SetGuard(g *guard.Guard) { c.guard = g }
 // agent's system prompt. Mirrors artifactSpec but without pentest-specific
 // wording ("payload", "capture response bodies") that would be odd in a general assistant.
 func chatWorkDirSpec(workDir string) string {
-	return "\n\n**File output rules**: whenever you need to write a file, write it to the working directory " + workDir + " (this is the default CWD — relative paths land here, and you may also use this absolute path) — do not write to /tmp or other absolute paths."
+	return "\n\n**File output rules**: whenever you need to write a file, write it to the working directory " + workDir + " (this is the default CWD — relative paths land here, and you may also use this absolute path) — do not write to /tmp or other absolute paths." +
+		"\n\n**Showing images**: to show the user an image (e.g. a browser screenshot), save it as png/jpg/gif/webp in the working directory and put `![short description](<absolute path of the file>)` in your reply; the chat displays it inline. Do not base64-encode, downscale or re-encode images to embed them."
 }
 
 // chatSystem renders the DB-managed prompt body for agentKey. Custom agents have

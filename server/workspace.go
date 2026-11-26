@@ -276,8 +276,10 @@ func (s *Server) wsDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /api/workspace/download?path=<rel> — stream a file as an attachment.
+// path may also be an absolute path inside the work dir (agents report the files
+// they write that way, and the chat renders such paths as images through here).
 func (s *Server) wsDownload(w http.ResponseWriter, r *http.Request) {
-	cp, ok := s.wsResolveConfined(r.URL.Query().Get("path"))
+	cp, ok := s.wsResolveConfined(workDirRel(s.m.dir, r.URL.Query().Get("path")))
 	if !ok {
 		writeErr(w, 400, "invalid path")
 		return
@@ -383,4 +385,17 @@ func sanitizeFilename(name string) string {
 	name = strings.ReplaceAll(name, "\n", "")
 	name = strings.ReplaceAll(name, "\r", "")
 	return name
+}
+
+// workDirRel returns p relative to root when p is an absolute path inside root,
+// else p unchanged. Confinement is still enforced by wsResolveConfined on the result.
+func workDirRel(root, p string) string {
+	if !filepath.IsAbs(p) {
+		return p
+	}
+	rel, err := filepath.Rel(root, p)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return p
+	}
+	return rel
 }

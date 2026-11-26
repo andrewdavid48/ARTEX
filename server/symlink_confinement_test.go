@@ -501,10 +501,25 @@ func TestWorkspaceDownloadSymlinkConfinement(t *testing.T) {
 		})
 	}
 
+	// An absolute path is accepted only inside the work dir, and the symlink rules
+	// above still apply to it.
+	for _, p := range []string{f.outside + "/secret.txt", filepath.Join(f.root, "out-file"), filepath.Join(f.root, "..", "outside", "secret.txt")} {
+		t.Run("reject_abs_"+filepath.Base(p), func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/workspace/download?path="+url.QueryEscape(p), nil)
+			rr := httptest.NewRecorder()
+			s.wsDownload(rr, req)
+			if rr.Code == http.StatusOK || strings.Contains(rr.Body.String(), "SECRET") {
+				t.Fatalf("wsDownload(%q) = %d (%s), want refused", p, rr.Code, rr.Body.String())
+			}
+		})
+	}
+
 	for _, tc := range []struct{ path, want string }{
 		{"in-file-rel", "INSIDE_OK"},
 		{"in-file-abs", "INSIDE_OK"},
 		{"in-dir-rel/nested.txt", "NESTED_OK"},
+		{filepath.Join(f.root, "inside.txt"), "INSIDE_OK"},
+		{filepath.Join(f.root, "subdir", "nested.txt"), "NESTED_OK"},
 	} {
 		t.Run("allow_"+tc.path, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/api/workspace/download?path="+url.QueryEscape(tc.path), nil)
