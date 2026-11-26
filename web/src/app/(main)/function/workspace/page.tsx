@@ -41,6 +41,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { ReposPanel } from "@/components/repos-panel";
 import { api } from "@/lib/api";
 import type { WorkspaceEntry, WorkspaceFile } from "@/lib/types";
 import { intlLocale, t } from "@/i18n";
@@ -175,6 +176,7 @@ export default function WorkspacePage() {
 
   return (
     <div className="flex flex-col gap-4">
+      <ReposPanel onOpen={load} onChanged={() => load(path)} />
       {/* Header: breadcrumb + actions */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1 text-sm">

@@ -271,6 +271,15 @@ function interceptPageQuery(page: number, size: number, filter: InterceptApprova
   return query.toString();
 }
 
+export type RepoInfo = {
+  name: string;
+  url: string;
+  ref: string;
+  commit: string;
+  path: string;
+  updated_at: string;
+};
+
 export const api = {
   // Backend application version (injected via ldflags at release, default "dev").
   // isolation: result of the startup agent isolation self-test; "degraded" shows a banner on every page.
@@ -495,6 +504,11 @@ export const api = {
   // Intents / facts / findings of an asset within this task (for the coverage graph node drawer).
   taskAssetRefs: (id: string, assetId: number) => get<CoverageAssetRefs>(`/tasks/${id}/asset-refs?asset_id=${assetId}`),
 
+  // ---- GitHub repository clones (server-side; the token never reaches the agent) ----
+  reposList: () => get<{ repos: RepoInfo[]; token_set: boolean }>(`/repos`),
+  repoClone: (url: string, ref?: string) => post<RepoInfo>(`/repos`, { url, ref: ref ?? "" }),
+  repoPull: (name: string) => post<RepoInfo>(`/repos/${encodeURIComponent(name)}/pull`),
+  repoDelete: (name: string) => del<{ ok: boolean }>(`/repos/${encodeURIComponent(name)}`),
   // ---- workspace file manager (workDir) ----
   workspaceList: (path = "") => get<WorkspaceListing>(`/workspace/list?path=${encodeURIComponent(path)}`),
   workspaceRead: (path: string) => get<WorkspaceFile>(`/workspace/read?path=${encodeURIComponent(path)}`),

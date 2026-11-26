@@ -1033,6 +1033,9 @@ export interface Settings {
   keenable_key_set: boolean;
   // write-only: only sent on PUT to store/clear the key.
   brave_search_api_key?: string;
+  // GitHub token for server-side repo clones: github_token_set reports whether one is stored; github_token is write-only ("" clears).
+  github_token_set?: boolean;
+  github_token?: string;
   tavily_search_api_key?: string;
   keenable_search_api_key?: string;
   // Dedicated egress proxy (http/https/socks5) for reaching search endpoints; unrelated to the MITM proxy that records traffic. Empty = direct.

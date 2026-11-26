@@ -56,20 +56,21 @@ func TestSecretBoxCrypto(t *testing.T) {
 type secretRows struct{ llm, mcp, cred, ch, task int64 }
 
 var plainSecrets = []string{"sk-plain-llm", "mcp-plain-tok", "plain-pass", "hook-plain-secret", "llmproxy-plain-pass",
-	"brave-plain", "tavily-plain", "keenable-plain", "wsproxy-plain-pass", "gproxy-plain-pass"}
+	"brave-plain", "tavily-plain", "keenable-plain", "wsproxy-plain-pass", "gproxy-plain-pass", "ghtoken-plain"}
 
-// secretSettingValues are the five secret settings written by the fixture.
+// secretSettingValues are the six secret settings written by the fixture.
 var secretSettingValues = map[string]string{
 	"brave_search_api_key":    "brave-plain",
 	"tavily_search_api_key":   "tavily-plain",
 	"keenable_search_api_key": "keenable-plain",
 	"web_search_proxy":        "socks5://u:wsproxy-plain-pass@ws.example:1080",
 	"global_proxy":            "http://u:gproxy-plain-pass@gp.example:3128",
+	"github_token":            "ghtoken-plain",
 }
 
 const llmProxyPlain = "http://u:llmproxy-plain-pass@llm-proxy.example:3128"
 
-const deleteSecretSettings = `DELETE FROM settings WHERE key IN ('brave_search_api_key','tavily_search_api_key','keenable_search_api_key','web_search_proxy','global_proxy')`
+const deleteSecretSettings = `DELETE FROM settings WHERE key IN ('brave_search_api_key','tavily_search_api_key','keenable_search_api_key','web_search_proxy','global_proxy','github_token')`
 
 // secretFixture writes one secret to each location, through the db API or, for
 // a legacy database, as raw plaintext SQL.

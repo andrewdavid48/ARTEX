@@ -833,6 +833,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/workspace/delete", s.wsDelete)
 	mux.HandleFunc("GET /api/workspace/download", s.wsDownload)
 	mux.HandleFunc("POST /api/workspace/upload", s.wsUpload)
+	mux.HandleFunc("GET /api/repos", s.reposList)
+	mux.HandleFunc("POST /api/repos", s.reposClone)
+	mux.HandleFunc("POST /api/repos/{name}/pull", s.reposPull)
+	mux.HandleFunc("DELETE /api/repos/{name}", s.reposDelete)
 	mux.HandleFunc("GET /api/tasks/{id}/scope", s.taskScopeList)
 	mux.HandleFunc("POST /api/tasks/{id}/scope", s.taskScopeAdd)
 	mux.HandleFunc("DELETE /api/tasks/{id}/scope/{sid}", s.taskScopeDelete)
@@ -3932,6 +3936,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"web_search_proxy_set":     proxy != "",
 		"global_proxy":             maskedSecret(s.m.GlobalProxy()), // global egress proxy, masked when set, "" = direct
 		"global_proxy_set":         s.m.GlobalProxy() != "",
+		"github_token_set":         s.gitHubToken() != "",
 		"python_interpreter":       strings.TrimSpace(pyStored), // user/auto-set value (empty = use runtime detection)
 		"workers":                  s.m.Workers(),               // number of concurrent worker agents (default 3); applies to tasks started afterwards
 		"task_concurrency_enabled": concOn,                      // task concurrency cap switch (default off)
@@ -4011,6 +4016,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		KeenableKey      *string `json:"keenable_search_api_key"`
 		WebSearchProxy   *string `json:"web_search_proxy"`   // dedicated egress proxy (http/https/socks5); null = keep, "" = clear
 		GlobalProxy      *string `json:"global_proxy"`       // global egress proxy (http/https/socks5); null = keep, "" = clear (direct)
+		GitHubToken      *string `json:"github_token"`       // token for server-side repo clones; null = keep, "" = clear
 		PythonInterp     *string `json:"python_interpreter"` // python interpreter path for the custom script tool
 		Workers          *int    `json:"workers"`            // number of concurrent worker agents (>0); applies to tasks started afterwards
 		// task concurrency cap: max simultaneously "running" tasks. Off = unlimited; on, new tasks beyond the cap queue and start automatically as slots free up.
@@ -4085,6 +4091,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	// A masked placeholder echoed back keeps the stored secret, like null.
 	req.BraveKey, req.TavilyKey, req.KeenableKey = keepIfMasked(req.BraveKey), keepIfMasked(req.TavilyKey), keepIfMasked(req.KeenableKey)
 	req.WebSearchProxy, req.GlobalProxy = keepIfMasked(req.WebSearchProxy), keepIfMasked(req.GlobalProxy)
+	if v := keepIfMasked(req.GitHubToken); v != nil {
+		if err := s.m.pg.SetSetting(settingGitHubToken, strings.TrimSpace(*v)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
 	if req.ConstraintsInjectPlanner != nil {
 		if err := s.m.pg.SetBool(settingConstraintsInjectPlanner, *req.ConstraintsInjectPlanner); err != nil {
 			writeErr(w, 500, err.Error())

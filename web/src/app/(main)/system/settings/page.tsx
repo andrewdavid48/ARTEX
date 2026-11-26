@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { CpuIcon, FlaskConicalIcon, KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
+import { CpuIcon, FlaskConicalIcon, GitBranchIcon, KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -36,6 +36,9 @@ export default function SystemSettingsPage() {
   const [backend, setBackend] = React.useState("ddgs");
   const [braveKeySet, setBraveKeySet] = React.useState(false);
   const [braveKeyInput, setBraveKeyInput] = React.useState("");
+  const [ghTokenSet, setGhTokenSet] = React.useState(false);
+  const [ghTokenInput, setGhTokenInput] = React.useState("");
+  const [savingGhToken, setSavingGhToken] = React.useState(false);
   const [tavilyKeySet, setTavilyKeySet] = React.useState(false);
   const [tavilyKeyInput, setTavilyKeyInput] = React.useState("");
   const [savingTavilyKey, setSavingTavilyKey] = React.useState(false);
@@ -67,6 +70,7 @@ export default function SystemSettingsPage() {
     setWebSearch(!!s.web_search_enabled);
     setBackend(s.web_search_backend || "ddgs");
     setBraveKeySet(!!s.brave_key_set);
+    setGhTokenSet(!!s.github_token_set);
     setTavilyKeySet(!!s.tavily_key_set);
     setKeenableKeySet(!!s.keenable_key_set);
     setProxyInput(s.web_search_proxy ?? "");
@@ -213,6 +217,19 @@ export default function SystemSettingsPage() {
       })
       .catch((e) => toast.error(t("Save failed: {error}", { error: (e as Error).message })))
       .finally(() => setSavingKey(false));
+  };
+
+  const saveGhToken = (value: string) => {
+    setSavingGhToken(true);
+    api
+      .setSettings({ github_token: value })
+      .then((s) => {
+        apply(s);
+        setGhTokenInput("");
+        toast.success(value ? t("Saved GitHub token") : t("Cleared GitHub token"));
+      })
+      .catch((e) => toast.error(t("Save failed: {error}", { error: (e as Error).message })))
+      .finally(() => setSavingGhToken(false));
   };
 
   const saveTavilyKey = () => {
@@ -468,6 +485,50 @@ export default function SystemSettingsPage() {
                 onCheckedChange={toggleInjectWorker}
               />
             </div>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-4 break-inside-avoid md:mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <GitBranchIcon className="size-4" />
+              {t("GitHub repositories")}
+            </CardTitle>
+            <CardDescription>
+              {t(
+                "Token used by the server to clone private GitHub repositories into the workspace (Workspace → Repositories). Stored encrypted; it is never shown to agents or written into the clone. Use a fine-grained, read-only token scoped to the repositories you need.",
+              )}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            <Label htmlFor="github-token" className="text-sm font-normal text-muted-foreground">
+              {t("GitHub token")}
+              {ghTokenSet && <span className="ml-2 text-xs text-emerald-500">{t("Configured")}</span>}
+            </Label>
+            <div className="flex items-center gap-2">
+              <Input
+                id="github-token"
+                type="password"
+                autoComplete="off"
+                placeholder={ghTokenSet ? t("Configured (leave empty to keep)") : t("Enter GitHub token")}
+                value={ghTokenInput}
+                disabled={!loaded || savingGhToken}
+                onChange={(e) => setGhTokenInput(e.target.value)}
+              />
+              <Button
+                type="button"
+                onClick={() => saveGhToken(ghTokenInput.trim())}
+                disabled={!loaded || savingGhToken || ghTokenInput.trim() === ""}
+              >
+                {t("Save")}
+              </Button>
+              {ghTokenSet && (
+                <Button type="button" variant="outline" onClick={() => saveGhToken("")} disabled={!loaded || savingGhToken}>
+                  {t("Clear")}
+                </Button>
+              )}
+            </div>
+            <p className="text-muted-foreground text-xs">{t("Public repositories clone without a token.")}</p>
           </CardContent>
         </Card>
 
