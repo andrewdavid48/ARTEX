@@ -111,3 +111,22 @@ func TestTerminalTextNamesProviderRefusal(t *testing.T) {
 		t.Fatalf("max_turns relabelled by a refusal stop: %q", summary)
 	}
 }
+
+// A run reports its last call's stop reason to the caller's observer; a run
+// nested inside it does not.
+func TestRunStopObserverSeesOnlyTopLevelRun(t *testing.T) {
+	ctx := WithRunStopObserver(context.Background())
+	obs, runCtx := takeRunStopObserver(ctx)
+	runCtx = WithStopTracker(runCtx)
+	if nested, _ := takeRunStopObserver(runCtx); nested != nil {
+		t.Fatal("a nested run would see the caller's observer")
+	}
+	streamUnder(t, runCtx, "refusal")
+	obs.set(LastStopReason(runCtx)) // what captureRunSession does on return
+	if got := RunStopReason(ctx); got != "refusal" {
+		t.Fatalf("RunStopReason = %q, want refusal", got)
+	}
+	if got := RunStopReason(context.Background()); got != "" {
+		t.Fatalf("no observer reports %q", got)
+	}
+}

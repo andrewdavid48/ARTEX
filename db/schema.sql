@@ -194,6 +194,9 @@ CREATE TABLE IF NOT EXISTS exploration_nodes (
     )
 );
 ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS blocked_reason TEXT;
+-- exhaust_count: how many times the intent settled as exhausted; the third time
+-- it settles as blocked (blocked_reason 'exhausted_limit') instead.
+ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS exhaust_count INT NOT NULL DEFAULT 0;
 -- Intent soft delete: when state='deleted', delete_reason records the user-provided deletion reason.
 ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS delete_reason TEXT;
 -- cold-digest (§2.3/§5.3): content_version bumps on any change that could alter a

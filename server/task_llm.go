@@ -87,6 +87,25 @@ func isQuotaExhaustedError(err error) bool {
 	return err != nil && agent.IsQuotaExhaustedMessage(err.Error())
 }
 
+// providerRefusalError marks a chain profile's turn that the provider's safety
+// system declined before any text or tool call. It is not a transport failure:
+// it is never retried on the same profile and never trips the breaker, it moves
+// the task straight to the next fallback profile, like quota exhaustion.
+type providerRefusalError struct{ stopReason string }
+
+func (e *providerRefusalError) Error() string {
+	return "provider refused the request (stop_reason=" + e.stopReason + ")"
+}
+
+func isProviderRefusal(err error) bool {
+	var target *providerRefusalError
+	return errors.As(err, &target)
+}
+
+// advancesChain reports whether err moves a chain task to its next profile on
+// the first occurrence.
+func advancesChain(err error) bool { return isQuotaExhaustedError(err) || isProviderRefusal(err) }
+
 // Consecutive-failure escalation (ouroboros cost-tier take, #99): quota
 // exhaustion already advances the chain, but a profile that keeps failing with
 // plain runtime errors (bad key, persistent 5xx, broken model output) would
@@ -178,6 +197,15 @@ type taskLLMStreamHooks struct {
 	// is not already the failover Pool (the chain, a bound agent, the global
 	// profile). Optional: test literals leave it nil and the call sites skip it.
 	recordHealth func(ctx context.Context, profileID int64, stream, committed bool, err error)
+	// hasFallback reports whether the chain still has a ready profile to move to
+	// after selection's. A provider refusal advances the chain only when it does;
+	// on the last profile the refusal is delivered as-is, so one refused request
+	// does not exhaust the task's chain. Optional: nil means "assume there is".
+	hasFallback func(taskLLMSelection) bool
+}
+
+func (h taskLLMStreamHooks) canFallBack(selection taskLLMSelection) bool {
+	return h.hasFallback == nil || h.hasFallback(selection)
 }
 
 // healthIDFor returns the profile whose breaker state a call on this provider
@@ -334,7 +362,40 @@ func (r *taskLLMRuntime) streamHooks() taskLLMStreamHooks {
 		transition: func(selection taskLLMSelection, transition db.TaskLLMTransition, cause error) {
 			r.s.emitTaskLLMTransition(selection.task, transition, cause)
 		},
+		hasFallback: func(selection taskLLMSelection) bool {
+			taskNum, err := parseTaskID(r.taskID)
+			if err != nil {
+				return false
+			}
+			pt, err := r.s.m.pg.GetTask(taskNum)
+			if err != nil || pt == nil {
+				return false
+			}
+			chain, err := r.s.m.pg.TaskLLMProfiles(taskNum)
+			if err != nil {
+				return false
+			}
+			return chainHasFallback(chain, selection.profileID, pt.LLMRotate)
+		},
 	}
+}
+
+// chainHasFallback mirrors the chain advance (db.markTaskLLMProfileQuotaExhausted):
+// the next profile is a ready entry after current's position, or any other ready
+// entry when the task rotates its chain.
+func chainHasFallback(chain []db.TaskLLMProfile, current int64, rotate bool) bool {
+	pos := -1
+	for _, e := range chain {
+		if e.ProfileID == current {
+			pos = e.Position
+		}
+	}
+	for _, e := range chain {
+		if e.ProfileID != current && e.Status == "ready" && (rotate || e.Position > pos) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *taskLLMRuntime) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
@@ -389,13 +450,16 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 			}
 			break
 		}
+		if callErr == nil && selection.profileID != 0 && llmpool.IsEmptyRefusal(msg, sr) && hooks.canFallBack(selection) {
+			callErr = &providerRefusalError{stopReason: sr}
+		}
 		if callErr == nil {
 			resetLLMFailStreak(taskID, selection.profileID)
 			return msg, sr, total, nil
 		}
 		// Non-quota failures on a chain profile escalate after a consecutive
 		// streak (#99): same advance path as quota exhaust, truthful reason.
-		if selection.profileID != 0 && !isQuotaExhaustedError(callErr) && ctx.Err() == nil {
+		if selection.profileID != 0 && !advancesChain(callErr) && ctx.Err() == nil {
 			if noteLLMCallFailure(taskID, selection.profileID) {
 				cause := fmt.Errorf("profile #%d failed %d consecutive calls (last: %w)", selection.profileID, llmFailStreakThreshold, callErr)
 				transition, markErr := hooks.exhaust(selection, cause)
@@ -413,7 +477,7 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 			return llm.Message{}, "", total, callErr
 		}
 		// profileID=0: the explicit chain was cleared; non-quota error: pass through. Neither changes the task failover state.
-		if selection.profileID == 0 || !isQuotaExhaustedError(callErr) {
+		if selection.profileID == 0 || !advancesChain(callErr) {
 			return llm.Message{}, "", total, callErr
 		}
 		transition, markErr := hooks.exhaust(selection, callErr)
@@ -479,10 +543,26 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 				pending = nil
 				streamErr = nil
 				attemptUsage = llm.Usage{}
+				refused := ""
 				for event, err := range selection.provider.Stream(ctx, req) {
+					if refused != "" {
+						// Drain the refused attempt so the recorder sees it complete; its
+						// events are held in case there is no profile to fall back to.
+						if err == nil {
+							pending = append(pending, event)
+						}
+						continue
+					}
 					if err != nil {
 						streamErr = err
 						break
+					}
+					// A chain profile's refusal before any output moves the task to the
+					// next fallback profile; nothing of this attempt is delivered.
+					if !committed && selection.profileID != 0 && llmpool.IsRefusalDelta(event) {
+						refused = event.StopReason
+						pending = append(pending, event)
+						continue
 					}
 					if !committed && !streamEventCommitsOutput(event) {
 						pending = append(pending, event)
@@ -501,7 +581,16 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 						return
 					}
 				}
-				if hooks.recordHealth != nil {
+				if refused != "" && streamErr == nil {
+					// The profile answered; a refusal says nothing about its health,
+					// so the breaker is told the call completed.
+					if hooks.recordHealth != nil {
+						hooks.recordHealth(ctx, selection.healthProfileID, true, committed, nil)
+					}
+					if hooks.canFallBack(selection) {
+						streamErr = &providerRefusalError{stopReason: refused}
+					} // else: no fallback left, pending (with the refusal) is delivered below
+				} else if hooks.recordHealth != nil {
 					hooks.recordHealth(ctx, selection.healthProfileID, true, committed, streamErr)
 				}
 				if streamErr != nil && !committed {
@@ -539,7 +628,7 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 			// streak (#99), mirroring completeTaskLLM. Escalation only applies to
 			// uncommitted streams: once events reached the caller, replaying on a
 			// new profile could duplicate delivered output, so the error surfaces.
-			if selection.profileID != 0 && !committed && !isQuotaExhaustedError(streamErr) && ctx.Err() == nil {
+			if selection.profileID != 0 && !committed && !advancesChain(streamErr) && ctx.Err() == nil {
 				if noteLLMCallFailure(taskID, selection.profileID) {
 					cause := fmt.Errorf("profile #%d failed %d consecutive calls (last: %w)", selection.profileID, llmFailStreakThreshold, streamErr)
 					transition, markErr := hooks.exhaust(selection, cause)
@@ -560,7 +649,7 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 			// profileID=0 means the explicit chain was cleared while this stable task
 			// bundle was still in use. Agent/global fallback errors follow the legacy
 			// behavior and never mutate task failover state.
-			if selection.profileID == 0 || !isQuotaExhaustedError(streamErr) {
+			if selection.profileID == 0 || !advancesChain(streamErr) {
 				yield(llm.StreamEvent{}, streamErr)
 				return
 			}
@@ -591,31 +680,25 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 }
 
 // pendingUsage is the usage the buffered (uncommitted) events of one attempt
-// reported. Only message_start can be buffered: message_delta commits.
+// reported: message_start adds, and a held message_delta (a refusal's) folds its
+// echo in as llm.Accumulator does.
 func pendingUsage(pending []llm.StreamEvent) llm.Usage {
 	var u llm.Usage
 	for _, ev := range pending {
-		if ev.Type == llm.SEMessageStart {
+		switch ev.Type {
+		case llm.SEMessageStart:
 			u.Add(ev.Usage)
+		case llm.SEMessageDelta:
+			u.MergeEcho(ev.Usage)
 		}
 	}
 	return u
 }
 
 // streamEventCommitsOutput reports whether delivering event makes the attempt
-// unreplayable. Signed and redacted thinking and tool-use signatures are opaque
-// output the model bound to this exact response, so they commit like text.
-func streamEventCommitsOutput(event llm.StreamEvent) bool {
-	switch event.Type {
-	case llm.SETextDelta, llm.SEThinkingDelta, llm.SEToolInputJSON,
-		llm.SEThinkingSignature, llm.SERedactedThinking, llm.SEToolUseSignature:
-		return event.Text != ""
-	case llm.SEToolUseStart, llm.SEMessageDelta, llm.SEMessageStop:
-		return true
-	default:
-		return false
-	}
-}
+// unreplayable (see llmpool.CommitsOutput: text and tool calls commit, thinking
+// is held so a thinking-only attempt can still be replayed).
+func streamEventCommitsOutput(event llm.StreamEvent) bool { return llmpool.CommitsOutput(event) }
 
 // The [default] retry count against the same provider within the pre-commit safe
 // window. The SDK's doStream retries only the connection phase (before the 200); once
@@ -655,7 +738,7 @@ func isRetryableStreamError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if isQuotaExhaustedError(err) {
+	if advancesChain(err) {
 		return false
 	}
 	s := strings.ToLower(err.Error())

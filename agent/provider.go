@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/compaction"
@@ -436,7 +437,13 @@ func (c Config) NewProvider() (llm.Provider, error) {
 	if c.RatePerSecond > 0 || c.RatePerMinute > 0 {
 		lc.RateLimit = &llm.RateLimit{PerSecond: c.RatePerSecond, PerMinute: c.RatePerMinute}
 	}
-	return llm.NewProvider(lc)
+	prov, err := llm.NewProvider(lc)
+	if err != nil {
+		return nil, err
+	}
+	// A policy block some endpoints send as answer text (Gemini) is reported as a
+	// content_filter refusal, so the fallback and intent settling see it.
+	return llmpool.WrapBlockedText(prov), nil
 }
 
 // IsQuotaExhaustedMessage deliberately recognizes only explicit balance,

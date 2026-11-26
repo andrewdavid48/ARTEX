@@ -1436,6 +1436,26 @@ WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='running' AND uncl
 	return s.settleIntentClaimResult(id, token, res, err)
 }
 
+// SettleIntentClaimExhausted settles the running intent as exhausted and counts
+// it. The IntentExhaustLimit-th exhausted settlement settles it as blocked with
+// reason IntentBlockedExhaustLimit instead, so an intent that keeps running out
+// (turn cap, timeout, every model refusing) stops coming back. Same token fence
+// as SettleIntentClaim. Returns the state written.
+func (s *ExplorationStore) SettleIntentClaimExhausted(id int64, token string) (string, error) {
+	var state string
+	err := s.db.QueryRow(`UPDATE exploration_nodes
+SET exhaust_count = exhaust_count + 1,
+    state = CASE WHEN exhaust_count + 1 >= $4 THEN 'blocked' ELSE 'exhausted' END,
+    blocked_reason = CASE WHEN exhaust_count + 1 >= $4 THEN $5 ELSE NULL END,
+    content_version = content_version + 1, completed_at = now(), unclaim_token = NULL
+WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state='running' AND unclaim_token=$3
+RETURNING state`, id, s.expID, token, IntentExhaustLimit, IntentBlockedExhaustLimit).Scan(&state)
+	if err == sql.ErrNoRows {
+		return "", s.claimRejection(id, token)
+	}
+	return state, err
+}
+
 // settleIntentClaimResult turns a fenced settle that matched no row into the
 // explicit rejection: claim lost unless the token is still the current one.
 func (s *ExplorationStore) settleIntentClaimResult(id int64, token string, res sql.Result, err error) error {
@@ -1445,8 +1465,13 @@ func (s *ExplorationStore) settleIntentClaimResult(id int64, token string, res s
 	if n, _ := res.RowsAffected(); n == 1 {
 		return nil
 	}
+	return s.claimRejection(id, token)
+}
+
+// claimRejection explains a fenced settle that matched no row.
+func (s *ExplorationStore) claimRejection(id int64, token string) error {
 	var current sql.NullString
-	err = s.db.QueryRow(`SELECT unclaim_token FROM exploration_nodes WHERE id=$1 AND exploration_id=$2 AND kind='intent'`, id, s.expID).Scan(&current)
+	err := s.db.QueryRow(`SELECT unclaim_token FROM exploration_nodes WHERE id=$1 AND exploration_id=$2 AND kind='intent'`, id, s.expID).Scan(&current)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}

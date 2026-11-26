@@ -1253,6 +1253,9 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		budget: meter,
 	}
 	wTaskID, _ := strconv.ParseInt(t.ID, 10, 64)
+	// Learns how this intent's runs ended, so a run whose last call was refused
+	// (no fallback model left) settles as exhausted.
+	workCtx = agent.WithRunStopObserver(workCtx)
 	e.BeginLLMCall(t.ID)
 	var reason harness.TerminalReason
 	var wrote agent.WriteCounts
@@ -1350,10 +1353,12 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	// The hard-fallback cancel of task-timeout settlement (not pause, not kill) cancelled
 	// this run → classify it as exhausted (settled), not mislabeled blocked. By then the worker has usually written its result back during the settlement phase.
 	if ectx.Err() != nil && e.isSettling(t.ID) {
-		if err := t.Store.SettleIntentClaim(intent.ID, token, "exhausted"); err != nil {
+		state, err := t.Store.SettleIntentClaimExhausted(intent.ID, token)
+		if err != nil {
+			state = "exhausted"
 			log.Printf("[worker %s] task %s intent #%d failed to persist the timeout-settlement state: %v", name, t.ID, intent.ID, err)
 		}
-		log.Printf("[worker %s] task %s intent #%d ended by task-timeout settlement (exhausted), wrote back %s", name, t.ID, intent.ID, wrote)
+		log.Printf("[worker %s] task %s intent #%d ended by task-timeout settlement (%s), wrote back %s", name, t.ID, intent.ID, state, wrote)
 		e.touch(t.ID)
 		return true
 	}
@@ -1399,10 +1404,21 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	case reason == harness.ReasonTimeout:
 		state = "exhausted"
 		log.Printf("[worker %s] intent %d ran out of time (exhausted), wrote back %s after settling", name, intent.ID, wrote)
+	case reason == harness.ReasonCompleted && agent.IsRefusalStop(agent.RunStopReason(workCtx)):
+		// Every fallback model refused (the chain falls over on a refusal first),
+		// so the intent did not complete: it was tried, not finished.
+		state = "exhausted"
+		log.Printf("[worker %s] intent %d: provider refused the last turn and no fallback model was left (exhausted), wrote back %s", name, intent.ID, wrote)
 	}
 	var stateErr error
 	if state == "blocked" && isTaskLLMChainExhausted(err) {
 		stateErr = t.Store.SettleIntentClaimBlocked(intent.ID, token, db.IntentBlockedLLMQuota)
+	} else if state == "exhausted" {
+		// The IntentExhaustLimit-th exhausted settlement blocks the intent instead.
+		var written string
+		if written, stateErr = t.Store.SettleIntentClaimExhausted(intent.ID, token); stateErr == nil {
+			state = written
+		}
 	} else {
 		stateErr = t.Store.SettleIntentClaim(intent.ID, token, state)
 	}

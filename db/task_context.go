@@ -11,6 +11,13 @@ import (
 
 const IntentBlockedLLMQuota = "llm_quota_exhausted"
 
+// IntentBlockedExhaustLimit is the blocked_reason of an intent that settled as
+// exhausted IntentExhaustLimit times; SettleIntentClaimExhausted sets it.
+const IntentBlockedExhaustLimit = "exhausted_limit"
+
+// IntentExhaustLimit is the exhausted settlement that blocks the intent instead.
+const IntentExhaustLimit = 3
+
 // TaskLLMProfile is one ordered entry in a task's explicit failover chain.
 type TaskLLMProfile struct {
 	ProfileID   int64      `json:"profile_id"`

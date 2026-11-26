@@ -237,18 +237,39 @@ func TestTaskLLMUncommittedStreamAttemptKeepsUsageWithoutReplay(t *testing.T) {
 	}
 }
 
-func TestTaskLLMOpaqueThinkingCommitsStream(t *testing.T) {
+func TestTaskLLMOpaqueToolSignatureCommitsStream(t *testing.T) {
 	defer withZeroRetryBackoff()()
-	for _, kind := range []llm.StreamEventType{llm.SEThinkingSignature, llm.SERedactedThinking, llm.SEToolUseSignature} {
+	kind := llm.SEToolUseSignature
+	if !streamEventCommitsOutput(llm.StreamEvent{Type: kind, Text: "opaque"}) {
+		t.Fatalf("%s does not commit", kind)
+	}
+	// A retryable failure after the opaque block is surfaced, not replayed.
+	p := &scriptedLLMProvider{events: []llm.StreamEvent{{Type: kind, Text: "opaque"}}, err: errors.New("connection reset by peer")}
+	events, err := collectTaskLLMStream(streamTaskLLM(t.Context(), "p12-opaque", llm.CompletionRequest{}, singleProfileHooks(p, agent.RetryConfig{})))
+	if err == nil || p.calls != 1 || len(events) != 1 || events[0].Type != kind {
+		t.Fatalf("calls=%d events=%+v err=%v", p.calls, events, err)
+	}
+}
+
+// Thinking (including signed and redacted blocks) is held until the first text
+// or tool call, so an attempt that only thought can be replayed: none of it has
+// reached the caller.
+func TestTaskLLMThinkingDoesNotCommitStream(t *testing.T) {
+	defer withZeroRetryBackoff()()
+	for _, kind := range []llm.StreamEventType{llm.SEThinkingDelta, llm.SEThinkingSignature, llm.SERedactedThinking} {
 		t.Run(string(kind), func(t *testing.T) {
-			if !streamEventCommitsOutput(llm.StreamEvent{Type: kind, Text: "opaque"}) {
-				t.Fatalf("%s does not commit", kind)
+			if streamEventCommitsOutput(llm.StreamEvent{Type: kind, Text: "opaque"}) {
+				t.Fatalf("%s commits", kind)
 			}
-			// A retryable failure after the opaque block is surfaced, not replayed.
 			p := &scriptedLLMProvider{events: []llm.StreamEvent{{Type: kind, Text: "opaque"}}, err: errors.New("connection reset by peer")}
-			events, err := collectTaskLLMStream(streamTaskLLM(t.Context(), "p12-opaque", llm.CompletionRequest{}, singleProfileHooks(p, agent.RetryConfig{})))
-			if err == nil || p.calls != 1 || len(events) != 1 || events[0].Type != kind {
-				t.Fatalf("calls=%d events=%+v err=%v", p.calls, events, err)
+			events, err := collectTaskLLMStream(streamTaskLLM(t.Context(), "p12-thinking", llm.CompletionRequest{}, singleProfileHooks(p, agent.RetryConfig{StreamAttempts: 1})))
+			if err == nil || p.calls != 2 {
+				t.Fatalf("calls=%d err=%v, want one same-provider replay", p.calls, err)
+			}
+			for _, ev := range events {
+				if ev.Type == kind {
+					t.Fatalf("held %s of a failed attempt was delivered: %+v", kind, events)
+				}
 			}
 		})
 	}

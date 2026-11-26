@@ -4,17 +4,14 @@ import (
 	"context"
 	"sync"
 
+	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/artex/llmrec"
 )
 
 // IsRefusalStop reports whether a provider stop reason means the provider's
-// safety system declined the request rather than the model ending its turn.
-// Anthropic returns stop_reason "refusal" with an empty or partial message;
-// OpenAI-compatible endpoints return finish_reason "content_filter", which Norma
-// passes through unmapped.
-func IsRefusalStop(stopReason string) bool {
-	return stopReason == "refusal" || stopReason == "content_filter"
-}
+// safety system declined the request rather than the model ending its turn
+// (see llmpool.IsRefusalStop).
+func IsRefusalStop(stopReason string) bool { return llmpool.IsRefusalStop(stopReason) }
 
 // stopTracker keeps the stop reason of the latest model call of one run. The
 // harness does not expose it: a refused turn has no text and no tool calls, so it
@@ -45,6 +42,35 @@ func WithStopTracker(ctx context.Context) context.Context {
 	t := &stopTracker{}
 	ctx = context.WithValue(ctx, stopTrackerKey{}, t)
 	return llmrec.WithStopSink(ctx, t.set)
+}
+
+type runStopObserverKey struct{}
+
+// WithRunStopObserver lets a caller learn how the next run(s) it starts under
+// ctx ended: each top-level captureRunSession reports the stop reason of its
+// last model call here when it returns (RunStopReason). Nested runs do not see
+// the observer, so a subagent's refusal never stands in for the run's own.
+func WithRunStopObserver(ctx context.Context) context.Context {
+	return context.WithValue(ctx, runStopObserverKey{}, &stopTracker{})
+}
+
+// RunStopReason returns the stop reason of the last model call of the latest
+// run that finished under ctx's observer, or "" when there is none.
+func RunStopReason(ctx context.Context) string {
+	if t, _ := ctx.Value(runStopObserverKey{}).(*stopTracker); t != nil {
+		return t.get()
+	}
+	return ""
+}
+
+// takeRunStopObserver returns ctx's run observer and a ctx without it, so the
+// run reports to it and the runs nested inside do not.
+func takeRunStopObserver(ctx context.Context) (*stopTracker, context.Context) {
+	t, _ := ctx.Value(runStopObserverKey{}).(*stopTracker)
+	if t == nil {
+		return nil, ctx
+	}
+	return t, context.WithValue(ctx, runStopObserverKey{}, (*stopTracker)(nil))
 }
 
 // LastStopReason returns the stop reason of the latest model call made under ctx

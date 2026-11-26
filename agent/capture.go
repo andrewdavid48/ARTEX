@@ -40,6 +40,10 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 	// Observe each model call's stop reason, so a provider refusal is reported as
 	// one (terminalText) and is not answered with an idle-turn rerun (steerHooks).
 	ctx = WithStopTracker(ctx)
+	if obs, inner := takeRunStopObserver(ctx); obs != nil {
+		ctx = inner
+		defer func() { obs.set(LastStopReason(ctx)) }()
+	}
 	var reason harness.TerminalReason
 	rec := func(r db.Activity) {
 		if r.Kind == "text" || r.Kind == "tool_result" {

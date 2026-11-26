@@ -73,26 +73,54 @@ func (p *Pool) Head() *Member { return p.members[0] }
 
 // Stream implements llm.Provider with failover.
 //
-// The one hard rule: a member may only be abandoned BEFORE it has yielded any
-// event. Once text or a tool_use has reached the caller, re-sending the same
-// request to another model would duplicate output and corrupt the conversation
-// history — so a mid-stream failure is surfaced as-is and left to the agent
-// harness's resume logic. Fortunately the failures this exists for (402 no
-// credit, 401 bad key, 429, 5xx) all surface during request establishment,
-// before the body is read, so they always land in the safe window.
+// The one hard rule: a member may only be abandoned BEFORE it has handed the
+// caller any output. Once text or a tool_use has reached the caller, re-sending
+// the same request to another model would duplicate output and corrupt the
+// conversation history — so a mid-stream failure is surfaced as-is and left to
+// the agent harness's resume logic. Events that are not output yet (message_start,
+// thinking) are held back until the first output event, so a failure or a
+// provider refusal that arrives before any output still falls over. The failures
+// this exists for (402 no credit, 401 bad key, 429, 5xx) surface during request
+// establishment; a refusal arrives as the turn's stop reason.
 func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	order := p.order(req)
 	return func(yield func(llm.StreamEvent, error) bool) {
 		var lastErr error
 		for i, m := range order {
-			emitted := false
+			committed, refused := false, ""
+			var pending []llm.StreamEvent
 			var failed error
 			for ev, err := range m.Prov.Stream(ctx, req) {
-				if err != nil && !emitted && shouldFailover(ctx, err) {
-					failed = err
-					break // safe window: nothing reached the caller yet
+				if refused != "" {
+					// Drain the refused attempt so the recorder sees it complete. Its
+					// events are held, in case no later member can take the request.
+					if err == nil {
+						pending = append(pending, ev)
+					}
+					continue
 				}
-				emitted = true
+				if err != nil && !committed && shouldFailover(ctx, err) {
+					failed = err
+					break // safe window: no output reached the caller yet
+				}
+				if err == nil && !committed {
+					if IsRefusalDelta(ev) {
+						refused = ev.StopReason
+						pending = append(pending, ev)
+						continue
+					}
+					if !CommitsOutput(ev) {
+						pending = append(pending, ev)
+						continue
+					}
+					for _, held := range pending {
+						if !yield(held, nil) {
+							return
+						}
+					}
+					pending = nil
+				}
+				committed = true
 				if !yield(ev, err) {
 					return // caller stopped consuming (cancel / early exit)
 				}
@@ -100,7 +128,32 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 					return // terminal error already handed to the caller
 				}
 			}
+			if refused != "" && failed == nil {
+				// The provider declined this request. The profile is healthy, so the
+				// breaker is not touched; the next member gets the same request.
+				p.health.RecordCall(ctx, m.ID, true, false, nil)
+				lastErr = fmt.Errorf("provider refused the request (stop_reason=%s)", refused)
+				if i+1 < len(order) {
+					n := order[i+1]
+					log.Printf("[llmpool] LLM failover: %q(%s) → %q(%s), reason: provider refusal (stop_reason=%s)",
+						m.Name, m.Model, n.Name, n.Model, refused)
+					continue
+				}
+				// Last member refused too: deliver its refusal as-is so the run
+				// reports it as a refusal rather than an exhausted chain.
+				for _, held := range pending {
+					if !yield(held, nil) {
+						return
+					}
+				}
+				return
+			}
 			if failed == nil {
+				for _, held := range pending { // a stream that ended without output
+					if !yield(held, nil) {
+						return
+					}
+				}
 				p.health.RecordCall(ctx, m.ID, true, false, nil) // completed: Pass
 				return
 			}
@@ -126,7 +179,8 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 // non-streaming request is atomic — it never delivers partial output — so every
 // failover-eligible failure lands in the safe window and the next member can be
 // tried without risk of duplicated output. Mirrors Stream's health-tripping and
-// chain-exhaustion behavior.
+// chain-exhaustion behavior, and like Stream moves on when a member's provider
+// refuses the request without producing text or tool calls.
 func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	order := p.order(req)
 	var lastErr error
@@ -134,6 +188,12 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 		msg, sr, usage, err := m.Prov.Complete(ctx, req)
 		if err == nil {
 			p.health.RecordCall(ctx, m.ID, false, false, nil) // Pass
+			if IsEmptyRefusal(msg, sr) && i+1 < len(order) {
+				n := order[i+1]
+				log.Printf("[llmpool] LLM failover: %q(%s) → %q(%s), reason: provider refusal (stop_reason=%s)",
+					m.Name, m.Model, n.Name, n.Model, sr)
+				continue
+			}
 			return msg, sr, usage, nil
 		}
 		if !shouldFailover(ctx, err) {

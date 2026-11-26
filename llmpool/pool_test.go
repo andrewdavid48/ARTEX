@@ -382,3 +382,81 @@ func TestTrimErrKeepsValidUTF8(t *testing.T) {
 		t.Fatalf("trimErr = %q (%d bytes), want at most 300 bytes plus …", got, len(got))
 	}
 }
+
+// refusedProv streams a turn the provider's safety system declined after some
+// thinking and before any text or tool call.
+func refusedProv(name, stop string) *fakeProv {
+	return &fakeProv{name: name, events: [][]llm.StreamEvent{{
+		{Type: llm.SEMessageStart},
+		{Type: llm.SEThinkingDelta, Text: "considering"},
+		{Type: llm.SEMessageDelta, StopReason: stop},
+	}}}
+}
+
+func TestRefusalFailsOverWithoutTrippingBreaker(t *testing.T) {
+	for _, stop := range []string{"refusal", "content_filter"} {
+		a, b := refusedProv("a", stop), okProv("b", "hello")
+		reg := NewRegistry(nil, nil)
+		p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, reg)
+
+		var thinking strings.Builder
+		var text strings.Builder
+		for ev, err := range p.Stream(context.Background(), llm.CompletionRequest{}) {
+			if err != nil {
+				t.Fatalf("%s: %v", stop, err)
+			}
+			if ev.Type == llm.SEThinkingDelta {
+				thinking.WriteString(ev.Text)
+			}
+			if ev.Type == llm.SETextDelta {
+				text.WriteString(ev.Text)
+			}
+		}
+		if text.String() != "hello" || thinking.Len() != 0 {
+			t.Fatalf("%s: text=%q thinking=%q, want only the backup's turn", stop, text.String(), thinking.String())
+		}
+		if a.calls != 1 || b.calls != 1 {
+			t.Fatalf("%s: calls a=%d b=%d, want 1/1", stop, a.calls, b.calls)
+		}
+		if reg.IsOpen(1) || reg.Get(1).Fails != 0 {
+			t.Fatalf("%s: a refusal counted against the profile's health", stop)
+		}
+	}
+}
+
+func TestRefusalOnLastMemberIsDelivered(t *testing.T) {
+	a := refusedProv("a", "refusal")
+	p := New([]*Member{member(1, "a", 10, a)}, NewRegistry(nil, nil))
+	acc := llm.NewAccumulator()
+	for ev, err := range p.Stream(context.Background(), llm.CompletionRequest{}) {
+		if err != nil {
+			t.Fatalf("want the refusal delivered, got %v", err)
+		}
+		acc.Add(ev)
+	}
+	if acc.StopReason != "refusal" {
+		t.Fatalf("stop = %q, want refusal", acc.StopReason)
+	}
+}
+
+func TestRefusalAfterTextIsNotReplayed(t *testing.T) {
+	a := &fakeProv{name: "a", events: [][]llm.StreamEvent{{
+		{Type: llm.SETextDelta, Text: "partial"},
+		{Type: llm.SEMessageDelta, StopReason: "refusal"},
+	}}}
+	b := okProv("b", "hello")
+	p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, NewRegistry(nil, nil))
+	got, err := drain(p.Stream(context.Background(), llm.CompletionRequest{}))
+	if err != nil || got != "partial" || b.calls != 0 {
+		t.Fatalf("text=%q err=%v backup calls=%d, want the delivered refusal kept", got, err, b.calls)
+	}
+}
+
+func TestCompleteRefusalFailsOver(t *testing.T) {
+	a, b := refusedProv("a", "refusal"), okProv("b", "hello")
+	p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, NewRegistry(nil, nil))
+	msg, _, _, err := p.Complete(context.Background(), llm.CompletionRequest{})
+	if err != nil || msg.Text() != "hello" {
+		t.Fatalf("text=%q err=%v, want the backup's answer", msg.Text(), err)
+	}
+}
