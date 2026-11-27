@@ -5,6 +5,9 @@
 // Schema changes:
 //   - schema.sql remains the idempotent base, executed on every startup.
 //   - Any new DDL goes in a numbered migration, migrations/NNNN_slug.sql.
+//     Migrations that exist only in this fork are numbered from 10001
+//     (migrations/1NNNN_slug.sql) so they never collide with upstream's; see
+//     forkMigrationBase in migrate.go.
 //     Open applies pending migrations once, in version order, and records
 //     each in schema_migrations with the SHA-256 of its file.
 //   - A published migration is never edited: Open refuses to start when an

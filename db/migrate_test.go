@@ -31,6 +31,7 @@ func TestLoadMigrationsValidation(t *testing.T) {
 
 	for name, fsys := range map[string]fstest.MapFS{
 		"bad name":          {"2_a.sql": {Data: []byte("SELECT 1;")}},
+		"six digits":        {"100001_a.sql": {Data: []byte("SELECT 1;")}},
 		"duplicate version": {"0001_a.sql": {Data: []byte("SELECT 1;")}, "0001_b.sql": {Data: []byte("SELECT 1;")}},
 	} {
 		if _, err := loadMigrations(fsys); err == nil {
@@ -141,9 +142,9 @@ func assertEmbeddedApplied(t *testing.T, d *DB) []appliedMigration {
 		{8, "0008_traffic_evidence_rewrite_flag.sql"}, {9, "0009_llm_context.sql"}, {10, "0010_dashboard_usage_indexes.sql"},
 		{11, "0011_traffic_tamper_hooks.sql"}, {12, "0012_lesson_withdrawn.sql"},
 		{13, "0013_lesson_evidence_history.sql"}, {14, "0014_bedrock_gateway_profiles.sql"},
-		{15, "0015_chat_bridges.sql"}, {16, "0016_intent_exhaust_count.sql"}}
+		{15, "0015_chat_bridges.sql"}, {10001, "10001_intent_exhaust_count.sql"}}
 	if len(applied) != len(want) {
-		t.Fatalf("schema_migrations = %+v, want versions 1 to 16", applied)
+		t.Fatalf("schema_migrations = %+v, want versions 1 to 15 and 10001", applied)
 	}
 	for i, w := range want {
 		content, err := fs.ReadFile(migrationsFS(), w.name)
@@ -416,6 +417,54 @@ func TestMigrationsRefuseOutOfOrderVersion(t *testing.T) {
 	}
 	if usage {
 		t.Error("llm_usage exists: the refused 0002 migration ran")
+	}
+}
+
+// Fork migrations (10001+) are a separate sequence: an upstream migration that
+// arrives after a fork migration was applied still runs, while a fork migration
+// below an applied fork migration is still refused.
+func TestMigrationsForkSequenceIsIndependent(t *testing.T) {
+	dsn := scratchDSN(t, "forkseq")
+	records, err := fs.ReadFile(migrationsFS(), llmRecordsMigration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fork := &fstest.MapFile{Data: []byte("SELECT 10002;")}
+	d, err := openWithMigrations(dsn, fstest.MapFS{
+		llmRecordsMigration: {Data: records},
+		"10002_fork.sql":    fork,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+
+	d, err = openWithMigrations(dsn, fstest.MapFS{
+		llmRecordsMigration: {Data: records},
+		"0003_probe.sql":    probeMigration,
+		"10002_fork.sql":    fork,
+	})
+	if err != nil {
+		t.Fatalf("upstream 0003 after applied fork 10002: %v", err)
+	}
+	got := readApplied(t, d)
+	d.Close()
+	if len(got) != 3 || got[0].version != 1 || got[1].version != 3 || got[2].version != 10002 {
+		t.Fatalf("schema_migrations = %+v, want versions 1, 3, 10002", got)
+	}
+
+	d, err = openWithMigrations(dsn, fstest.MapFS{
+		llmRecordsMigration: {Data: records},
+		"0003_probe.sql":    probeMigration,
+		"10001_late.sql":    {Data: []byte("SELECT 10001;")},
+		"10002_fork.sql":    fork,
+	})
+	if err == nil {
+		d.Close()
+		t.Fatal("Open succeeded with fork 10001 pending below applied fork 10002")
+	}
+	if !strings.Contains(err.Error(), "never inserted") {
+		t.Errorf("error %q does not mention never inserted", err)
 	}
 }
 

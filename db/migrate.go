@@ -46,7 +46,21 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 `
 
-var migrationNameRE = regexp.MustCompile(`^([0-9]{4})_[a-z0-9_]+\.sql$`)
+var migrationNameRE = regexp.MustCompile(`^([0-9]{4,5})_[a-z0-9_]+\.sql$`)
+
+// forkMigrationBase splits versions into two independent sequences. Upstream
+// migrations use 0001-9999; migrations that exist only in this fork use 10001
+// and up, so the two never share a number. Ordering is enforced within each
+// sequence only: a new upstream migration still applies after a fork migration
+// with a higher number.
+const forkMigrationBase = 10000
+
+func migrationSequence(version int) int {
+	if version > forkMigrationBase {
+		return 1
+	}
+	return 0
+}
 
 type migration struct {
 	version  int
@@ -56,7 +70,7 @@ type migration struct {
 }
 
 // loadMigrations reads every *.sql file at the root of fsys, sorted by version.
-// A .sql file that does not follow NNNN_slug.sql, or a duplicated version, is
+// A .sql file that does not follow NNNN_slug.sql (or NNNNN_slug.sql for a fork migration), or a duplicated version, is
 // an error so a typo cannot silently skip a migration.
 func loadMigrations(fsys fs.FS) ([]migration, error) {
 	entries, err := fs.ReadDir(fsys, ".")
@@ -71,7 +85,7 @@ func loadMigrations(fsys fs.FS) ([]migration, error) {
 		}
 		m := migrationNameRE.FindStringSubmatch(e.Name())
 		if m == nil {
-			return nil, fmt.Errorf("migration file %s: name must be NNNN_slug.sql", e.Name())
+			return nil, fmt.Errorf("migration file %s: name must be NNNN_slug.sql or NNNNN_slug.sql", e.Name())
 		}
 		version, _ := strconv.Atoi(m[1])
 		if version == 0 {
@@ -155,10 +169,15 @@ func applyMigrations(ctx context.Context, conn *sql.Conn, fsys fs.FS) error {
 
 	// A pending version below the newest applied one would run out of order on
 	// this database: refuse it before writing anything.
-	if len(appliedVersions) > 0 {
-		maxVersion := appliedVersions[len(appliedVersions)-1]
+	// Upstream and fork migrations are separate sequences (forkMigrationBase).
+	maxApplied := map[int]int{}
+	for _, v := range appliedVersions {
+		maxApplied[migrationSequence(v)] = v
+	}
+	if len(maxApplied) > 0 {
 		for _, m := range migrations {
-			if _, done := applied[m.version]; !done && m.version < maxVersion {
+			maxVersion, ok := maxApplied[migrationSequence(m.version)]
+			if _, done := applied[m.version]; !done && ok && m.version < maxVersion {
 				return fmt.Errorf("migration %s (%04d) is older than the applied migration %s (%04d); migrations must be appended, never inserted",
 					m.name, m.version, applied[maxVersion].name, maxVersion)
 			}
